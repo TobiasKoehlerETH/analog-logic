@@ -1,0 +1,92 @@
+@import "tailwindcss";
+@custom-variant dark (&:is(.dark *));
+:root {
+  --radius: 0.25rem;
+  --background: #ffffff;
+  --foreground: #171717;
+  --card: #ffffff;
+  --card-foreground: #171717;
+  --popover: #ffffff;
+  --popover-foreground: #171717;
+  --primary: #171717;
+  --primary-foreground: #ffffff;
+  --secondary: #f5f5f5;
+  --secondary-foreground: #262626;
+  --muted: #f5f5f5;
+  --muted-foreground: #737373;
+  --accent: #f0f0f0;
+  --accent-foreground: #262626;
+  --destructive: #404040;
+  --border: #e5e5e5;
+  --input: #d4d4d4;
+  --ring: #171717;
+  --sidebar: #fafafa;
+  --sidebar-foreground: #262626;
+  --sidebar-primary: #171717;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #f0f0f0;
+  --sidebar-accent-foreground: #262626;
+  --sidebar-border: #e5e5e5;
+  --sidebar-ring: #171717;
+  font-family: "Segoe UI", sans-serif;
+  font-synthesis: none;
+  color-scheme: light;
+}
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+@layer base {
+  * { @apply border-border outline-ring/50; }
+  body { @apply bg-background text-foreground; margin: 0; overflow: hidden; }
+  button:not(:disabled), [role="button"]:not(:disabled) { cursor: pointer; }
+}
+
+/* Custom rendering only; controls and layout use shadcn/ui. */
+.scope-track{position:relative;flex:1;min-width:0;overflow:hidden;touch-action:none;user-select:none;background:#ffffff}
+.scope-track.pan{cursor:grab}
+.scope-track.pan:active{cursor:grabbing}
+.scope-track.window{cursor:crosshair}
+.scope-track canvas{width:100%;height:100%;display:block}
+.trace-empty{position:absolute;left:50%;top:45%;transform:translate(-50%,-50%);font-size:24px;font-weight:300;color:#bdbdbd;pointer-events:none;text-align:center}
+.trace-empty span{display:block;font-size:11px;font-weight:400;margin-top:10px;color:#999999}
+.cursor-readout{position:absolute;right:20px;bottom:30px;display:flex;gap:17px;background:#f5f5f5ed;padding:5px 8px;font:10px Consolas,monospace;color:#525252;pointer-events:none;border-radius:3px}
+.zoom-box{position:absolute;border:1px solid #525252;background:#52525222;pointer-events:none}
+.decode-overlays{position:absolute;top:39px;height:25px;left:62px;right:18px;overflow:hidden;pointer-events:none}
+.decode-bubble{position:absolute;top:0;height:23px;border:1px solid;color:#262626;background:#ffffffee;border-radius:4px;font:11px Consolas,monospace;text-align:center;overflow:hidden;white-space:nowrap;line-height:21px;pointer-events:auto;cursor:pointer;padding:0 4px;min-width:1px}
+.decode-bubble:hover{filter:brightness(1.4)}
+.decode-bubble.warning{border-color:#404040!important;color:#404040}
+.decode-count{position:absolute;right:22px;top:8px;color:#737373;font:10px Consolas,monospace;pointer-events:none}
+.logic-threshold-label{position:absolute;left:65px;color:#737373;font:9px Consolas,monospace;pointer-events:none}
+
+.scope-crosshair { position:absolute; pointer-events:none; }
+.scope-crosshair.vertical { width:0; border-left:1px dashed #b3b3b3; }
+.scope-crosshair.horizontal { height:0; border-top:1px dashed #b3b3b3; }

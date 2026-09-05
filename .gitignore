@@ -1,0 +1,35 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+src-tauri/target
+src-tauri/gen
+.tools/
+captures/
+.local-notes/
+.env
+.env.*
+!.env.example
+
+# Editor directories and files
+.vscode/
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Local research artifacts
+.firecrawl/
+tools/ad3-saleae-emulator/.venv/
