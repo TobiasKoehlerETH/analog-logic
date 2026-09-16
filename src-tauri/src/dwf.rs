@@ -802,7 +802,10 @@ pub fn set_analog_stream_running(running: bool) -> Result<(), String> {
     })
 }
 
-pub fn read_analog_stream(sample_rate_hz: f64) -> Result<AnalogCapture, String> {
+pub fn read_analog_stream(
+    sample_rate_hz: f64,
+    buffers: &mut [Vec<f64>; 2],
+) -> Result<AnalogCapture, String> {
     with_device(|device| unsafe {
         let errors: Symbol<ErrorTextFn> = device
             .library
@@ -835,7 +838,13 @@ pub fn read_analog_stream(sample_rate_hz: f64) -> Result<AnalogCapture, String> 
         if !(0..=2_000_000).contains(&available) {
             return Err("Invalid streaming sample count returned by AD3".into());
         }
-        let mut channels = vec![vec![0.0; available as usize]; 2];
+        let mut channels = [
+            std::mem::take(&mut buffers[0]),
+            std::mem::take(&mut buffers[1]),
+        ];
+        for values in &mut channels {
+            values.resize(available as usize, 0.0);
+        }
         for (channel, values) in channels.iter_mut().enumerate() {
             if available > 0 {
                 check(
@@ -856,7 +865,7 @@ pub fn read_analog_stream(sample_rate_hz: f64) -> Result<AnalogCapture, String> 
         }
         Ok(AnalogCapture {
             sample_rate_hz,
-            channels,
+            channels: channels.into_iter().collect(),
             samples_lost: lost.max(0),
             samples_corrupt: corrupt.max(0),
         })

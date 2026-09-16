@@ -11,7 +11,7 @@ Maintain a small, readable Windows Tauri app that captures two Analog Discovery 
 | Area | Read first |
 | --- | --- |
 | UI state and Tauri calls | `src/app/App.tsx` |
-| Canvas rendering and navigation | `src/app/ScopeTrack.tsx` |
+| uPlot rendering and navigation | `src/app/ScopeTrack.tsx` |
 | Device access | `src-tauri/src/dwf.rs` |
 | Acquisition, rolling data, envelopes, logs | `src-tauri/src/stream.rs` |
 | Protocol bridge and annotation parsing | `src-tauri/src/analyzer.rs` |
@@ -34,6 +34,7 @@ The normal data path is `dwf.rs → stream.rs → Tauri commands → App.tsx →
 - Prefer the smallest change that makes the behavior clear. Avoid new files, wrappers, or abstractions unless they remove real duplication.
 - Preserve existing behavior unless the task names a behavior change. Update `README.md` when user-visible behavior or setup changes.
 - Before finalizing code, run `pnpm check` and inspect the diff. The AD3 integration test is ignored unless hardware is attached.
+- For waveform changes, run `pnpm check:scope` (Edge and local sigrok required); it validates simulated CAN rendering without opening hardware.
 - Use the public README for user setup and behavior. Keep this file short and operational.
 - Do not edit `dist/`, `node_modules/`, `src-tauri/target/`, `src-tauri/gen/`, `captures/`, `.tools/`, `.firecrawl/`, or `.local-notes/` as repository content.
 

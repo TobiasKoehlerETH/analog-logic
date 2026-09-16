@@ -70,22 +70,27 @@
   button:not(:disabled), [role="button"]:not(:disabled) { cursor: pointer; }
 }
 
-/* Custom rendering only; controls and layout use shadcn/ui. */
+/* Custom scope overlays; uPlot owns the high-volume waveform canvas. */
 .scope-track{position:relative;flex:1;min-width:0;overflow:hidden;touch-action:none;user-select:none;background:#ffffff}
 .scope-track.pan{cursor:grab}
 .scope-track.pan:active{cursor:grabbing}
 .scope-track.window{cursor:crosshair}
-.scope-track canvas{width:100%;height:100%;display:block}
+.scope-plot{position:absolute;inset:0}
+.scope-track .uplot{position:absolute;inset:0}
+.scope-track .uplot canvas{display:block}
+.scope-track .u-over{cursor:inherit}
 .trace-empty{position:absolute;left:50%;top:45%;transform:translate(-50%,-50%);font-size:24px;font-weight:300;color:#bdbdbd;pointer-events:none;text-align:center}
 .trace-empty span{display:block;font-size:11px;font-weight:400;margin-top:10px;color:#999999}
 .cursor-readout{position:absolute;right:20px;bottom:30px;display:flex;gap:17px;background:#f5f5f5ed;padding:5px 8px;font:10px Consolas,monospace;color:#525252;pointer-events:none;border-radius:3px}
 .zoom-box{position:absolute;border:1px solid #525252;background:#52525222;pointer-events:none}
-.decode-overlays{position:absolute;top:39px;height:25px;left:62px;right:18px;overflow:hidden;pointer-events:none}
+.decode-overlays{position:absolute;height:23px;overflow:hidden;pointer-events:none}
 .decode-bubble{position:absolute;top:0;height:23px;border:1px solid;color:#262626;background:#ffffffee;border-radius:4px;font:11px Consolas,monospace;text-align:center;overflow:hidden;white-space:nowrap;line-height:21px;pointer-events:auto;cursor:pointer;padding:0 4px;min-width:1px}
 .decode-bubble:hover{filter:brightness(1.4)}
 .decode-bubble.warning{border-color:#404040!important;color:#404040}
+.decode-highlight{position:absolute;box-sizing:border-box;border-left:2px solid;border-right:2px solid;pointer-events:none;z-index:1}
 .decode-count{position:absolute;right:22px;top:8px;color:#737373;font:10px Consolas,monospace;pointer-events:none}
 .logic-threshold-label{position:absolute;left:65px;color:#737373;font:9px Consolas,monospace;pointer-events:none}
+.logic-threshold-line{position:absolute;border-top:1px dashed #a3a3a3;pointer-events:none}
 
 .scope-crosshair { position:absolute; pointer-events:none; }
 .scope-crosshair.vertical { width:0; border-left:1px dashed #b3b3b3; }

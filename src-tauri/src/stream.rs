@@ -19,6 +19,9 @@ use std::{
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
+const MAX_RAW_WINDOW_SAMPLES: usize = 2_000_000;
+const MAX_DISPLAY_BUCKETS: usize = 262_144;
+
 struct Control {
     stop: Arc<AtomicBool>,
     state: Arc<Mutex<State>>,
@@ -39,8 +42,20 @@ struct State {
     corrupt: u64,
     channels: [VecDeque<f64>; 2],
     capacity: usize,
+    window_samples: u64,
+    display_bucket_size: usize,
+    display_capacity: usize,
+    display: VecDeque<DisplayBucket>,
     error: Option<String>,
     sequence: u64,
+}
+
+#[derive(Clone)]
+struct DisplayBucket {
+    sample_start: u64,
+    count: usize,
+    min: [f64; 2],
+    max: [f64; 2],
 }
 #[derive(Clone, Serialize)]
 pub struct Envelope {
@@ -81,6 +96,31 @@ fn shared() -> Result<Arc<Mutex<State>>, String> {
         .ok_or("Start the AD3 stream first".into())
 }
 
+fn window_sample_count(rate: f64, window_ms: f64) -> Result<u64, String> {
+    let count = rate * window_ms / 1000.0;
+    if !rate.is_finite()
+        || rate <= 0.0
+        || !window_ms.is_finite()
+        || window_ms <= 0.0
+        || !count.is_finite()
+        || count < 8.0
+        || count > u64::MAX as f64
+    {
+        return Err(
+            "Choose a positive rate and display window containing at least 8 samples.".into(),
+        );
+    }
+    Ok(count.ceil() as u64)
+}
+
+fn display_config(window_samples: u64) -> (usize, usize) {
+    let bucket_size = window_samples.div_ceil(MAX_DISPLAY_BUCKETS as u64).max(1) as usize;
+    let capacity = window_samples
+        .div_ceil(bucket_size as u64)
+        .min(MAX_DISPLAY_BUCKETS as u64) as usize;
+    (bucket_size, capacity.max(1))
+}
+
 #[tauri::command]
 pub async fn start_stream(index: i32, sample_rate_hz: f64, window_ms: f64) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || start(index, sample_rate_hz, window_ms))
@@ -88,16 +128,8 @@ pub async fn start_stream(index: i32, sample_rate_hz: f64, window_ms: f64) -> Re
         .map_err(err)?
 }
 fn start(index: i32, rate: f64, window_ms: f64) -> Result<(), String> {
-    let count = rate * window_ms / 1000.0;
-    if !rate.is_finite()
-        || rate <= 0.0
-        || !count.is_finite()
-        || !(8.0..=2_000_000.0).contains(&count)
-    {
-        return Err(
-            "Choose a positive rate and display window containing 8 to 2,000,000 samples.".into(),
-        );
-    }
+    let window_samples = window_sample_count(rate, window_ms)?;
+    let (display_bucket_size, display_capacity) = display_config(window_samples);
     let mut manager = control().lock().map_err(err)?;
     if let Some(existing) = manager.as_ref() {
         if existing.worker.as_ref().is_some_and(|w| !w.is_finished()) {
@@ -129,7 +161,11 @@ fn start(index: i32, rate: f64, window_ms: f64) -> Result<(), String> {
         lost: 0,
         corrupt: 0,
         channels: [VecDeque::new(), VecDeque::new()],
-        capacity: count.round() as usize,
+        capacity: window_samples.min(MAX_RAW_WINDOW_SAMPLES as u64) as usize,
+        window_samples,
+        display_bucket_size,
+        display_capacity,
+        display: VecDeque::new(),
         error: None,
         sequence: 0,
     }));
@@ -173,7 +209,7 @@ fn run(
         let applied = dwf::configure_ad3_analog(AnalogConfig {
             channels: vec![0, 1],
             frequency_hz: rate,
-            buffer_size: caps.analog_buffer_max.min(131072),
+            buffer_size: caps.analog_buffer_max,
             range_v: 10.0,
             offset_v: 0.0,
             acquisition_mode: 3,
@@ -189,9 +225,10 @@ fn run(
             let mut s = state.lock().map_err(err)?;
             s.rate = applied.frequency_hz;
             s.bits = caps.analog_bits;
-            s.capacity = (applied.frequency_hz * window_ms / 1000.0)
-                .round()
-                .clamp(8.0, 2_000_000.0) as usize;
+            s.window_samples = window_sample_count(applied.frequency_hz, window_ms)?;
+            s.capacity = s.window_samples.min(MAX_RAW_WINDOW_SAMPLES as u64) as usize;
+            (s.display_bucket_size, s.display_capacity) = display_config(s.window_samples);
+            s.display.clear();
             PathBuf::from(&s.directory)
         };
         let mut data_log = BufWriter::with_capacity(
@@ -212,9 +249,13 @@ fn run(
         let _ = ready.send(Ok(()));
         let mut last_data = Instant::now();
         let mut last_flush = Instant::now();
+        let mut read_buffers = [
+            Vec::with_capacity(caps.analog_buffer_max.max(0) as usize),
+            Vec::with_capacity(caps.analog_buffer_max.max(0) as usize),
+        ];
         let mut packed = Vec::new();
         while !stop.load(Ordering::Relaxed) {
-            let chunk = dwf::read_analog_stream(applied.frequency_hz)?;
+            let chunk = dwf::read_analog_stream(applied.frequency_hz, &mut read_buffers)?;
             let count = chunk.channels[0].len();
             if count > 0 || chunk.samples_lost > 0 || chunk.samples_corrupt > 0 {
                 last_data = Instant::now();
@@ -226,8 +267,11 @@ fn run(
                 }
                 data_log.write_all(&packed).map_err(err)?;
                 let mut s = state.lock().map_err(err)?;
-                s.total += chunk.samples_lost as u64;
-                writeln!(chunks, "{}", serde_json::json!({"sample_start":s.total,"count":count,"lost_before":chunk.samples_lost,"corrupt":chunk.samples_corrupt,"file_sample_offset":s.received})).map_err(err)?;
+                let sample_start = s.total.saturating_add(chunk.samples_lost as u64);
+                let display_bucket_size = s.display_bucket_size;
+                let display_capacity = s.display_capacity;
+                s.total = sample_start;
+                writeln!(chunks, "{}", serde_json::json!({"sample_start":sample_start,"count":count,"lost_before":chunk.samples_lost,"corrupt":chunk.samples_corrupt,"file_sample_offset":s.received})).map_err(err)?;
                 s.total += count as u64;
                 s.received += count as u64;
                 s.lost += chunk.samples_lost as u64;
@@ -240,7 +284,21 @@ fn run(
                     chunk.samples_lost > 0,
                     chunk.samples_corrupt > 0,
                 );
+                append_display(
+                    &mut s.display,
+                    &chunk.channels,
+                    sample_start,
+                    display_bucket_size,
+                    display_capacity,
+                    chunk.samples_lost > 0,
+                    chunk.samples_corrupt > 0,
+                );
                 s.sequence += 1;
+                let mut channels = chunk.channels.into_iter();
+                read_buffers = [
+                    channels.next().unwrap_or_default(),
+                    channels.next().unwrap_or_default(),
+                ];
             } else {
                 if last_data.elapsed() > Duration::from_secs(5) {
                     return Err("No samples received from AD3 for 5 seconds".into());
@@ -300,6 +358,49 @@ fn append_window(
         target.extend(&source[offset..]);
     }
 }
+
+fn append_display(
+    display: &mut VecDeque<DisplayBucket>,
+    channels: &[Vec<f64>],
+    sample_start: u64,
+    bucket_size: usize,
+    capacity: usize,
+    lost: bool,
+    corrupt: bool,
+) {
+    if lost || corrupt {
+        display.clear();
+    }
+    if corrupt || channels.len() < 2 {
+        return;
+    }
+    let count = channels[0].len().min(channels[1].len());
+    for index in 0..count {
+        let sample_index = sample_start.saturating_add(index as u64);
+        let values = [channels[0][index], channels[1][index]];
+        let append_to_last = display.back().is_some_and(|bucket| {
+            bucket.sample_start + bucket.count as u64 == sample_index && bucket.count < bucket_size
+        });
+        if append_to_last {
+            let bucket = display.back_mut().expect("display bucket exists");
+            for channel in 0..2 {
+                bucket.min[channel] = bucket.min[channel].min(values[channel]);
+                bucket.max[channel] = bucket.max[channel].max(values[channel]);
+            }
+            bucket.count += 1;
+        } else {
+            display.push_back(DisplayBucket {
+                sample_start: sample_index,
+                count: 1,
+                min: values,
+                max: values,
+            });
+        }
+        while display.len() > capacity {
+            display.pop_front();
+        }
+    }
+}
 #[tauri::command]
 pub async fn stop_stream() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(stop_blocking)
@@ -333,12 +434,37 @@ fn snapshot(
 ) -> Result<StreamView, String> {
     let shared = shared()?;
     let s = shared.lock().map_err(err)?;
-    let count = s.channels[0].len();
-    let channels: [Vec<f64>; 2] = [
-        s.channels[0].iter().copied().collect(),
-        s.channels[1].iter().copied().collect(),
-    ];
-    let origin = s.total.saturating_sub(count as u64) as f64 / s.rate;
+    let display: Vec<DisplayBucket> = s.display.iter().cloned().collect();
+    let count = display.iter().map(|bucket| bucket.count).sum::<usize>();
+    let origin_sample = display
+        .first()
+        .map(|bucket| bucket.sample_start)
+        .unwrap_or(s.total);
+    let origin = origin_sample as f64 / s.rate;
+    let display_end = display
+        .last()
+        .map(|bucket| bucket.sample_start.saturating_add(bucket.count as u64))
+        .unwrap_or(origin_sample);
+    let duration = display_end.saturating_sub(origin_sample) as f64 / s.rate;
+    let stats = (0..2)
+        .map(|channel| {
+            let min_v = display
+                .iter()
+                .map(|bucket| bucket.min[channel])
+                .reduce(f64::min)
+                .unwrap_or(0.0);
+            let max_v = display
+                .iter()
+                .map(|bucket| bucket.max[channel])
+                .reduce(f64::max)
+                .unwrap_or(0.0);
+            SignalStats {
+                min_v,
+                max_v,
+                mean_v: (min_v + max_v) / 2.0,
+            }
+        })
+        .collect();
     let mut view = StreamView {
         running: s.running,
         directory: s.directory.clone(),
@@ -349,7 +475,7 @@ fn snapshot(
         samples_corrupt: s.corrupt,
         sample_count: count,
         origin_s: origin,
-        duration_s: count as f64 / s.rate,
+        duration_s: duration,
         sequence: s.sequence,
         error: s.error.clone(),
         envelopes: [
@@ -366,32 +492,97 @@ fn snapshot(
                 max: vec![],
             },
         ],
-        stats: vec![],
+        stats,
     };
     drop(s);
     let start = start_s.unwrap_or(0.0).max(0.0);
     let span = span_s
         .unwrap_or(view.duration_s)
         .max(1.0 / view.sample_rate_hz);
-    for (i, values) in channels.iter().enumerate() {
-        view.envelopes[i] = envelope(
-            values,
+    for i in 0..2 {
+        view.envelopes[i] = envelope_display(
+            &display,
+            i,
             view.sample_rate_hz,
+            origin,
             start,
             span,
             pixels.clamp(64, 4096),
         );
-        view.stats.push(SignalStats {
-            min_v: values.iter().copied().reduce(f64::min).unwrap_or(0.0),
-            max_v: values.iter().copied().reduce(f64::max).unwrap_or(0.0),
-            mean_v: if count > 0 {
-                values.iter().sum::<f64>() / count as f64
-            } else {
-                0.0
-            },
-        });
     }
     Ok(view)
+}
+
+fn envelope_display(
+    display: &[DisplayBucket],
+    channel: usize,
+    rate: f64,
+    origin: f64,
+    start: f64,
+    span: f64,
+    pixels: usize,
+) -> Envelope {
+    let range_start = ((origin + start).max(0.0) * rate).floor() as u64;
+    let range_end = ((origin + start + span).max(0.0) * rate).ceil() as u64;
+    let first = display
+        .iter()
+        .position(|bucket| bucket.sample_start.saturating_add(bucket.count as u64) > range_start);
+    let Some(first) = first else {
+        return Envelope {
+            start_s: 0.0,
+            step_s: 0.0,
+            min: vec![],
+            max: vec![],
+        };
+    };
+    let last = display[first..]
+        .iter()
+        .position(|bucket| bucket.sample_start >= range_end)
+        .map(|offset| first + offset)
+        .unwrap_or(display.len());
+    if first >= last {
+        return Envelope {
+            start_s: 0.0,
+            step_s: 0.0,
+            min: vec![],
+            max: vec![],
+        };
+    }
+    let step_buckets = (last - first).div_ceil(pixels).max(1);
+    let mut result = Envelope {
+        start_s: display[first].sample_start as f64 / rate - origin,
+        step_s: 0.0,
+        min: vec![],
+        max: vec![],
+    };
+    for group in display[first..last].chunks(step_buckets) {
+        result.min.push(
+            group
+                .iter()
+                .map(|bucket| bucket.min[channel])
+                .fold(f64::INFINITY, f64::min),
+        );
+        result.max.push(
+            group
+                .iter()
+                .map(|bucket| bucket.max[channel])
+                .fold(f64::NEG_INFINITY, f64::max),
+        );
+    }
+    result.step_s = step_buckets as f64 * group_bucket_size(display, first) as f64 / rate;
+    result
+}
+
+fn group_bucket_size(display: &[DisplayBucket], first: usize) -> usize {
+    display
+        .get(first)
+        .and_then(|bucket| {
+            display
+                .get(first + 1)
+                .map(|next| next.sample_start - bucket.sample_start)
+        })
+        .unwrap_or(display[first].count as u64)
+        .max(1) as usize
 }
 fn envelope(values: &[f64], rate: f64, start: f64, span: f64, pixels: usize) -> Envelope {
     let first = ((start * rate).floor() as usize).min(values.len());
@@ -533,6 +724,36 @@ mod tests {
         assert_eq!(window[1].iter().copied().collect::<Vec<_>>(), vec![19.]);
         append_window(&mut window, &[vec![8.], vec![18.]], 4, false, true);
         assert!(window[0].is_empty());
+    }
+    #[test]
+    fn high_rate_live_window_uses_display_buckets() {
+        let samples = window_sample_count(100_000_000.0, 100.0).unwrap();
+        assert_eq!(samples, 10_000_000);
+        let (bucket_size, capacity) = display_config(samples);
+        assert!(bucket_size > 1);
+        assert!(capacity <= MAX_DISPLAY_BUCKETS);
+
+        let mut display = VecDeque::new();
+        append_display(
+            &mut display,
+            &[vec![0.0, 3.3, 0.0], vec![1.0, 1.0, 1.0]],
+            100,
+            bucket_size,
+            capacity,
+            false,
+            false,
+        );
+        let display_view: Vec<_> = display.iter().cloned().collect();
+        let result = envelope_display(
+            &display_view,
+            0,
+            100_000_000.0,
+            100.0 / 100_000_000.0,
+            0.0,
+            3.0 / 100_000_000.0,
+            100,
+        );
+        assert_eq!(result.max.iter().copied().fold(0.0, f64::max), 3.3);
     }
     #[test]
     fn envelopes_preserve_single_sample_pulses_and_zoom() {
